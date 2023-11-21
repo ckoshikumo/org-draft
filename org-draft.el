@@ -69,4 +69,4 @@
   (keymap-set org-draft-mode-map "<remap> <org-end-of-line>" 'org-draft-goto-eol)
   (org-draft-add-indents))
 
-(provide 'org-draft-mode)
+(provide 'org-draft)
