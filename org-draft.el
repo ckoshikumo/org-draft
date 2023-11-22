@@ -16,7 +16,6 @@
       (overlay-put ov 'evaporate t)
       (overlay-put ov 'before-string (propertize "\n" 'face 'default 'line-height 0.8)))))
 
-(add-hook 'org-insert-heading-hook #'org-draft-add-padding)
 (defun org-draft-add-paddings ()
   (interactive)
   (save-excursion
@@ -72,9 +71,23 @@
   :lighter " draft"
   (advice-add 'org-end-of-line :after #'org-draft-goto-eol)
   (advice-add 'org-beginning-of-line :around #'org-draft-goto-bol)
-
-  (add-hook 'after-change-functions #'org-draft-auto-indent)
   (keymap-set org-draft-mode-map "<remap> <org-end-of-line>" 'org-draft-goto-eol)
-  (org-draft-add-indents))
+
+  (if org-draft-mode
+      (progn
+        (add-hook 'after-change-functions #'org-draft-auto-indent 0 t)
+        (add-hook 'org-insert-heading-hook #'org-draft-add-padding 0 t)
+        (add-hook 'org-after-demote-entry-hook #'org-draft-add-padding 0 t)
+        (add-hook 'org-after-promote-entry-hook #'org-draft-add-padding 0 t)
+        (setq line-spacing 0.4)
+        (org-draft-add-indents)
+        (org-draft-add-paddings))
+
+    (remove-hook 'after-change-functions #'org-draft-auto-indent)
+    (remove-hook 'org-insert-heading-hook #'org-draft-add-padding)
+    (remove-hook 'org-after-demote-entry-hook #'org-draft-add-padding)
+    (remove-hook 'org-after-promote-entry-hook #'org-draft-add-padding)
+    (setq line-spacing (default-value 'line-spacing))
+    (org-draft-remove-all)))
 
 (provide 'org-draft)
