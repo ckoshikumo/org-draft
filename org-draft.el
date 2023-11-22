@@ -17,6 +17,12 @@
       (overlay-put ov 'before-string (propertize "\n" 'face 'default 'line-height 0.8)))))
 
 (add-hook 'org-insert-heading-hook #'org-draft-add-padding)
+(defun org-draft-add-paddings ()
+  (interactive)
+  (save-excursion
+    (goto-char (point-min))
+    (while (outline-next-heading)
+      (org-draft-add-padding))))
 
 (defun org-draft-auto-indent (_beg _end _len)
   (when (bound-and-true-p org-draft-mode)
