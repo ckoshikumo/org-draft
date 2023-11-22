@@ -1,5 +1,7 @@
 ;;; -*- lexical-binding: t; -*-
 
+(require 'org)
+
 (defun org-draft-remove-all ()
   (interactive)
   (remove-overlays (point-min) (point-max) 'org-draft-indent t)
