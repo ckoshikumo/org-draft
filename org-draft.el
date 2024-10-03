@@ -390,6 +390,8 @@ as indentation for the second paragraph."
     (forward-char -1)
     (org-draft--insert-page-break page-num)))
 
+(defvar-local org-draft--folded-headings nil)
+
 (defun org-draft--paginate-forward (buffer &optional chars-to-paginate)
   (when (eq buffer (current-buffer))
     (setq chars-to-paginate (or chars-to-paginate org-draft-partial-repagination-count))
@@ -400,11 +402,25 @@ as indentation for the second paragraph."
             (setq page-num (1+ (overlay-get last-break 'org-draft-page-num))
                   start (overlay-start last-break)))
         (setq page-num 1
-              start (point-min)))
+              start (org-draft--pagination-start)))
 
       (save-excursion
-        (let ((end (+ start chars-to-paginate)))
+        (let ((end (min (point-max) (+ start chars-to-paginate))))
           (goto-char start)
+
+          (save-excursion
+            (when (org-invisible-p)
+              (org-back-to-heading)
+              (org-fold-show-subtree)
+              (push (pos-bol) org-draft--folded-headings)))
+
+          (save-excursion
+            (let ((change (org-fold-core-next-folding-state-change nil nil end)))
+              (while (and (not (= change end)))
+                (goto-char change)
+                (org-fold-show-subtree)
+                (push (pos-bol) org-draft--folded-headings)
+                (setq change (org-fold-core-next-folding-state-change nil nil end)))))
 
           (when (= page-num 1)
             ;; Special case for first page: since there's no page break above, we
@@ -416,7 +432,7 @@ as indentation for the second paragraph."
               (org-draft--insert-page-break page-num)
               (setq page-num (1+ page-num))))
 
-          (while (and (<= (point) end)
+          (while (and (< (point) end)
                       (not (eq 0 (org-draft--forward-page)))
                       (not (eobp)))
             (vertical-motion (cons (window-width) 0))
@@ -431,7 +447,15 @@ as indentation for the second paragraph."
         (if (eobp)
             (org-draft--insert-last-page-break page-num)
           (setq org-draft--idle-pagination-timer
-                (run-with-idle-timer 0.5 nil 'org-draft--paginate-forward (current-buffer))))))))
+                (run-with-idle-timer 0.5 nil 'org-draft--paginate-forward (current-buffer))))
+
+        (when org-draft--folded-headings
+          (save-excursion
+            (mapc (lambda (pt)
+                    (goto-char pt)
+                    (org-fold-subtree t))
+                  org-draft--folded-headings))
+          (setq org-draft--folded-headings nil))))))
 
 (defun org-draft--delete-expired-breaks-from-cache (beg-of-change next-break-idx)
   (when org-draft--page-break-cache
@@ -455,7 +479,7 @@ as indentation for the second paragraph."
                                                       (>= (overlay-end break) beg)))))
         (let ((page-num (overlay-get (nth next-break-idx org-draft--page-break-cache) 'org-draft-page-num))
               (start (if (= next-break-idx 0)
-                         (point-min)
+                         (org-draft--pagination-start)
                        (overlay-start (nth (1- next-break-idx) org-draft--page-break-cache)))))
           (save-excursion
             (goto-char start)
@@ -471,6 +495,17 @@ as indentation for the second paragraph."
         (org-draft--paginate-forward (current-buffer))
         (setq org-draft--idle-pagination-timer
               (run-with-idle-timer 0.5 nil 'org-draft--paginate-forward (current-buffer)))))))
+
+(defun org-draft--pagination-start ()
+  (save-excursion
+    (goto-char (point-min))
+    (let ((case-fold-search t))
+      (if (search-forward "# pagination start" nil t)
+          (progn (org-draft-next-line)
+                 (org-draft-goto-bol)
+                 (skip-chars-forward "\n")
+                 (point))
+        (point)))))
 
 
 ;;; Mode definition:
