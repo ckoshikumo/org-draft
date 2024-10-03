@@ -258,33 +258,28 @@ as indentation for the second paragraph."
         (when (not (org-draft--at-inline-task-p))
           (org-draft--format-heading))))))
 
-(defun org-draft--hide-heading-stars ()
-  (let* ((beg (point))
-         (end (progn (skip-chars-forward "* ") (point))))
-    (org-draft--make-overlay
-     beg end
-     'org-draft-heading t
-     'org-draft-stars-hidden t
-     'evaporate t
-     'invisible t)
-    end))
-
-(defun org-draft--add-heading-padding ()
-  (org-draft--make-overlay
-   (point) (1+ (point))
-   'org-draft-heading t
-   'org-draft-padding t
-   'evaporate t
-   'before-string (propertize "\n" 'face 'default 'line-height 0.8)))
-
 (defun org-draft--format-heading ()
   (save-excursion
     (org-draft-goto-bol)
     (when org-draft-hide-all-stars
-      (goto-char (org-draft--hide-heading-stars)))
+      (let* ((beg (point))
+             (end (progn (skip-chars-forward "* ") (point))))
+        (org-draft--make-overlay
+         beg end
+         'org-draft-heading t
+         'org-draft-stars-hidden t
+         'evaporate t
+         'invisible t)
+        (goto-char end)))
+
     (when (and org-draft-padding-before-headings
                (not (looking-at "\n")))
-      (org-draft--add-heading-padding))))
+      (org-draft--make-overlay
+       (point) (1+ (point))
+       'org-draft-heading t
+       'org-draft-padding t
+       'evaporate t
+       'before-string (propertize "\n" 'face 'default 'line-height 0.8)))))
 
 (defun org-draft--auto-format-headings (beg end _len)
   (when (bound-and-true-p org-draft-mode)
