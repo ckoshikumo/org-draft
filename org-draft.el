@@ -267,7 +267,7 @@ as indentation for the second paragraph."
      'org-draft-stars-hidden t
      'evaporate t
      'invisible t)
-    (goto-char end)))
+    end))
 
 (defun org-draft--add-heading-padding ()
   (org-draft--make-overlay
@@ -281,7 +281,7 @@ as indentation for the second paragraph."
   (save-excursion
     (org-draft-goto-bol)
     (when org-draft-hide-all-stars
-      (org-draft--hide-heading-stars))
+      (goto-char (org-draft--hide-heading-stars)))
     (when (and org-draft-padding-before-headings
                (not (looking-at "\n")))
       (org-draft--add-heading-padding))))
