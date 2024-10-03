@@ -68,14 +68,14 @@ as indentation for the second paragraph."
   :group 'org-draft
   :type 'integer)
 
-(defcustom org-draft-page-break-face 'org-draft-page-break-face
+(defcustom org-draft-face 'org-draft-face
   "Which face to use for page breaks dividers."
   :group 'org-draft
   :type 'face)
 
-(defface org-draft-page-break-face
+(defface org-draft-face
   '((t :inherit 'fixed-pitch))
-  "Default face for the page break dividers.")
+  "Face for indentation and page breaks. Should be monospaced.")
 
 
 ;;; Commands and fixes:
@@ -219,7 +219,7 @@ as indentation for the second paragraph."
          (match-beginning 1) (match-end 1)
          'org-draft-indent t
          'evaporate t
-         'display org-draft-indent-string)))))
+         'display (propertize org-draft-indent-string 'face 'org-draft-face))))))
 
 (defun org-draft--auto-indent (beg end _len)
   (when (bound-and-true-p org-draft-mode)
@@ -323,7 +323,7 @@ as indentation for the second paragraph."
     (if (and org-draft--page-break-current-number-length
              (= org-draft--page-break-current-number-length nlen))
         (concat (car org-draft--page-break-template) page-num (cdr org-draft--page-break-template))
-      (let* ((width (- (window-max-chars-per-line nil org-draft-page-break-face) 4))
+      (let* ((width (- (window-max-chars-per-line nil org-draft-face) 4))
              (base-str-len (/ width 2))
              (left-str (concat "\n"
                                (make-string base-str-len org-draft-soft-page-break-char)
@@ -342,7 +342,7 @@ as indentation for the second paragraph."
              'org-draft-page-num page-num
              'evaporate t
              'after-string (propertize (org-draft--make-page-break-string page-num)
-                                       'face 'org-draft-page-break-face
+                                       'face 'org-draft-face
                                        'line-spacing org-draft-page-break-spacing))))
     (push ov org-draft--page-break-cache)))
 
