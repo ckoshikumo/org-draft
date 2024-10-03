@@ -254,9 +254,9 @@ as indentation for the second paragraph."
                  (not (org-draft--at-inline-task-p)))
         (org-draft--format-heading))
       (while (and (outline-next-heading)
-                  (< (point) end)
-                  (not (org-draft--at-inline-task-p)))
-        (org-draft--format-heading)))))
+                  (< (point) end))
+        (when (not (org-draft--at-inline-task-p))
+          (org-draft--format-heading))))))
 
 (defun org-draft--hide-heading-stars ()
   (let* ((beg (point))
