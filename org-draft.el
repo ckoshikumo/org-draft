@@ -15,6 +15,13 @@ without having to use newlines."
   :local t
   :type 'bool)
 
+(defcustom org-draft-padding-line-height 0.8
+  "Float that will be used for the line-height of padding before
+headings."
+  :group 'org-draft
+  :local t
+  :type 'float)
+
 (defcustom org-draft-hide-all-stars t
   "Non-nil to hide ALL leading heading stars, leaving only
 fontification as the marker of a heading."
@@ -279,7 +286,7 @@ as indentation for the second paragraph."
        'org-draft-heading t
        'org-draft-padding t
        'evaporate t
-       'before-string (propertize "\n" 'face 'default 'line-height 0.8)))))
+       'before-string (propertize "\n" 'face 'default 'line-height org-draft-padding-line-height)))))
 
 (defun org-draft--auto-format-headings (beg end _len)
   (when (bound-and-true-p org-draft-mode)
