@@ -356,12 +356,6 @@ blank line remains visible)."
 
 (defvar-local org-draft--formatting-headers nil)
 
-(defun ovov ()
-  (interactive)
-  (org-draft--make-overlay
-   (1- (point)) (point)
-   'face '(:background "green")))
-
 (defun org-draft--auto-format-headings (_beg _end _len)
   (when (and (bound-and-true-p org-draft-mode)
              (org-draft--at-heading-p))
