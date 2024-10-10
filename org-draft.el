@@ -8,14 +8,14 @@
   :prefix "org-draft-"
   :group 'convenience)
 
-(defcustom org-draft-padding-before-headings t
+(defcustom org-draft-padding-before-headings nil
   "Non-nil if you want to add vertical whitespace before headings
 without having to use newlines."
   :group 'org-draft
   :local t
   :type 'bool)
 
-(defcustom org-draft-hide-all-stars t
+(defcustom org-draft-hide-all-stars nil
   "Non-nil to hide ALL leading heading stars, leaving only
 fontification as the marker of a heading."
   :group 'org-draft
@@ -78,7 +78,7 @@ blank line remains visible)."
   :local t
   :type 'integer)
 
-(defcustom org-draft-partial-repagination-count 15000
+(defcustom org-draft-partial-repagination-count 50000
   "How many characters to repaginate each time."
   :group 'org-draft
   :type 'integer)
@@ -103,6 +103,16 @@ blank line remains visible)."
 (defvar-local org-draft--scroll-margin nil)
 (defvar-local org-draft--visibility nil)
 
+(defmacro org-draft--with-visibility (beg end &rest body)
+  (declare (indent 2))
+  `(save-restriction
+     (narrow-to-region ,beg ,end)
+     (org-draft--save-visibility)
+     (org-fold-show-all '(blocks headings))
+     (unwind-protect
+         (progn ,@body)
+       (org-draft--restore-visibility))))
+
 
 ;;; Commands and fixes:
 
@@ -121,15 +131,20 @@ blank line remains visible)."
   (vertical-motion (cons (window-width) 0))
   (point))
 
+(defun org-draft--get-next-page-break-pos (pt)
+  (when (org-draft--rebuild-page-break-cache)
+    (let ((break (seq-find (lambda (break)
+                             (> (overlay-end break) pt))
+                           org-draft--page-break-cache)))
+      (when break (overlay-start break)))))
+
 (defun org-draft--visual-eol-pos ()
-  (let ((eol (save-excursion
-               (vertical-motion (cons (window-width) 0))
-               (point)))
+  (let ((eol (save-excursion (org-draft--simple-goto-eol)))
         (break (or (org-draft--get-next-page-break-pos (point)) (point-max))))
     (min eol break)))
 
 (defun org-draft--visual-bol-pos ()
-  (if (and (org-draft--on-page-break-p)
+  (if (and (org-draft--at-page-break-p)
            (not (eq (point) (org-draft--visual-eol-pos))))
       (point)
     (save-excursion
@@ -142,24 +157,31 @@ blank line remains visible)."
     (goto-char (org-draft--visual-eol-pos))
     (when (and (eq (point) orig)
                (save-excursion (org-draft-goto-bol) (org-at-heading-p)))
-      (org-end-of-line))))
+      (org-end-of-line)))
+  (point))
 
 (defun org-draft-goto-bol ()
   (interactive)
-  (goto-char (org-draft--visual-bol-pos)))
+  (goto-char (org-draft--visual-bol-pos))
+  (point))
 
 (defun org-draft-next-line (&optional arg)
   (interactive "p")
   (setq arg (abs (or arg 1)))
 
-  (let ((col (- (point) (org-draft--visual-bol-pos))))
+  (let* ((bol (org-draft--visual-bol-pos))
+         (col (if (save-excursion
+                    (goto-char bol)
+                    (get-char-property (point) 'org-draft-indent))
+                  0
+                (- (point) bol))))
     (while (and (> arg 0)
                 (not (eobp)))
       (vertical-motion 1)
+      (setq arg (1- arg))
       (while (and (get-char-property (point) 'org-draft-page-break)
                   (not (eobp)))
-        (forward-char 1))
-      (setq arg (1- arg)))
+        (forward-char 1)))
 
     (if (> arg 0)
         nil
@@ -168,33 +190,40 @@ blank line remains visible)."
                     col)))
         (unless (> 0 f)
           (forward-char f))
-        t))))
+        t))
+    (when (get-char-property (point) 'org-draft-indent)
+      (forward-line 1))))
 
 (defun org-draft-previous-line (&optional arg)
   (interactive "p")
   (setq arg (abs (or arg 1)))
 
   (let* ((bol (org-draft--visual-bol-pos))
-         (col (- (point) bol)))
+         (col (if (save-excursion
+                    (goto-char bol)
+                    (get-char-property (point) 'org-draft-indent))
+                  0
+                (- (point) bol))))
     (while (and (< 0 arg)
                 (not (bobp)))
+      (setq arg (1- arg))
 
-      (cond ((org-draft--on-page-break-p)
+      (cond ((org-draft--at-page-break-p)
              (setq col 0)
              (forward-char -1)
-             (while (and (invisible-p (point))
+             (while (and (org-invisible-p (point))
                          (not (bobp)))
                (org-draft--previous-heading)))
 
             ((and (org-draft--at-heading-p)
                   (save-excursion
                     (goto-char (pos-bol))
-                    (org-draft--on-page-break-p)))
+                    (org-draft--at-page-break-p)))
              (setq col (- (point) (pos-bol)))
              (goto-char (pos-bol))
              (forward-char -1))
 
-            ((org-draft--on-first-page-line-p)
+            ((org-draft--at-first-page-line-p)
              (org-draft-goto-bol)
              (forward-char -1))
 
@@ -202,9 +231,7 @@ blank line remains visible)."
                  (vertical-motion -1)
                  (when (or (eq pt (point))
                            (eq bol (org-draft--visual-bol-pos)))
-                   (vertical-motion -2)))))
-
-      (setq arg (1- arg)))
+                   (vertical-motion -2))))))
 
     (let (skipped)
       (while (get-char-property (point) 'org-draft-page-break)
@@ -218,50 +245,115 @@ blank line remains visible)."
                      (org-draft--visual-bol-pos))
                   col)))
       (unless (> 0 f)
-        (forward-char f)))))
+        (forward-char f)))
+    (when (get-char-property (point) 'org-draft-indent)
+      (forward-line 1))))
+
+(defvar-local org-draft--complex-heading-regexp nil)
+
+(defun org-draft--make-complex-heading-regexp ()
+  (setq org-draft--complex-heading-regexp
+        (concat "\\(?:" org-todo-regexp "\\)?"
+		"\\(?: +\\(\\[#.\\]\\)\\)?"
+		"\\(?: +\\(.*?\\)\\)??"
+		"\\(?:[ \t]+\\(:[[:alnum:]_@#%:]+:\\)\\)?"
+		"[ \t]*$")))
 
 (defun org-draft--beginning-of-line-ad (orig-fun &rest args)
   (let ((orig (point)))
     (apply orig-fun args)
-    (when (and (bound-and-true-p org-draft-mode)
-               (get-char-property (point) 'org-draft-indent))
-      (forward-line)
-      (when (= orig (point))
-        (forward-line -1)))))
+    (when (bound-and-true-p org-draft-mode)
+      (when (get-char-property (point) 'org-draft-indent)
+        (forward-line)
+        (when (= orig (point))
+          (forward-line -1)))
 
-(defun org-draft--point-at-first-line-p ()
+      (let ((case-fold-search nil) pos)
+        (when (and (eq (point) (org-draft--visual-bol-pos))
+                   (looking-at org-draft--complex-heading-regexp))
+          (when (setq pos (or (match-end 2) (match-end 1)))
+            (setq pos (1+ pos))
+            (unless (eq orig pos)
+              (goto-char pos))))))))
+
+(defun org-draft--at-page-break-p ()
+  (unless (bobp)
+    (get-char-property (1- (point)) 'org-draft-page-break)))
+
+(defun org-draft--at-first-screen-line-p ()
   (let* ((top (window-start))
          (lines (count-screen-lines top (save-excursion (move-to-window-line -1) (point)))))
     (<= (- lines (- lines (count-screen-lines top (point)))) 1)))
 
-(defun org-draft--point-at-last-line-p ()
+(defun org-draft--at-last-screen-line-p ()
   (let ((top (window-start)))
     (<= (- (count-screen-lines top (save-excursion (move-to-window-line -1) (point)))
            (count-screen-lines top (point)))
         1)))
 
+(defun org-draft--at-first-page-line-p ()
+  (or (save-excursion
+        (org-draft--simple-goto-bol)
+        (org-draft--at-page-break-p))
+      (save-excursion
+        (and (org-draft--at-heading-p)
+             (progn (goto-char (pos-bol))
+                    (org-draft--at-page-break-p))))))
+
+(defun org-draft--at-last-page-line-p ()
+  (save-excursion
+    (org-draft-next-line)
+    (org-draft--at-first-page-line-p)))
+
 (defun org-draft--fix-scroll-down-line-ad (orig-fun &rest args)
   (if (bound-and-true-p org-draft-mode)
-      (let ((last-line-p (org-draft--point-at-last-line-p))
-            (orig-pt (point)))
+      (let ((orig-last-window-line-p (org-draft--at-last-screen-line-p))
+            (orig-first-page-line-p (org-draft--at-first-page-line-p))
+            (orig-pt (point))
+            target-on-last-page-line-p
+            target-on-first-page-line-p)
         (move-to-window-line 0)
         (org-draft-previous-line)
+        (setq target-on-last-page-line-p (org-draft--at-last-page-line-p)
+              target-on-first-page-line-p (org-draft--at-first-page-line-p))
         (recenter org-draft--scroll-margin t)
-        (if last-line-p
-            (move-to-window-line -2)
+
+        (if orig-last-window-line-p
+            (cond ((or target-on-first-page-line-p target-on-last-page-line-p)
+                   (move-to-window-line -4))
+                  (orig-first-page-line-p
+                   (move-to-window-line -3))
+                  (t (move-to-window-line -2)))
           (goto-char orig-pt)))
-    (apply orig-fun args)))
+    (apply orig-fun args))
+  (when (get-char-property (point) 'org-draft-indent)
+    (forward-line 1)))
 
 (defun org-draft--fix-scroll-up-line-ad (orig-fun &rest args)
+  (interactive)
   (if (bound-and-true-p org-draft-mode)
-      (let ((first-line-p (org-draft--point-at-first-line-p))
-            (orig-pt (point)))
-        (move-to-window-line 1)
+      (let ((orig-pt (point))
+            (orig-first-screen-line-p (org-draft--at-first-screen-line-p))
+            (orig-first-page-line-p (org-draft--at-first-screen-line-p))
+            first-screen-line-p
+            first-page-line-p)
+        (save-excursion
+          (move-to-window-line 0)
+          (setq first-screen-line-p (org-draft--at-first-screen-line-p)
+                first-page-line-p (org-draft--at-first-page-line-p)))
+        (cond ((and first-screen-line-p
+                    first-page-line-p
+                    (not orig-first-page-line-p))
+               (move-to-window-line 2))
+              (first-page-line-p
+               (move-to-window-line 1))
+              (t (move-to-window-line 1)))
         (recenter org-draft--scroll-margin t)
-        (if first-line-p
-            (move-to-window-line 0)
-          (goto-char orig-pt)))
-    (apply orig-fun args)))
+        (if (not orig-first-screen-line-p)
+            (goto-char orig-pt)))
+    (apply orig-fun args))
+  (when (get-char-property (point) 'org-draft-indent)
+    (forward-line 1)))
 
 (defun org-draft--keyboard-quit-ad (&rest _args)
   (when (and (bound-and-true-p org-draft-mode)
@@ -307,6 +399,8 @@ blank line remains visible)."
 
 ;;; Headings
 
+(defvar-local org-draft--formatting-headers nil)
+
 (defun org-draft-format-headings-buffer ()
   (interactive)
   (org-draft-format-headings-region (point-min) (point-max)))
@@ -315,7 +409,6 @@ blank line remains visible)."
   (interactive "r")
   (when (or org-draft-padding-before-headings
             org-draft-hide-all-stars)
-    (remove-overlays beg end 'org-draft-heading t)
     (save-excursion
       (goto-char beg)
 
@@ -323,15 +416,15 @@ blank line remains visible)."
       (when (and (org-at-heading-p)
                  (not (org-draft--at-inline-task-p)))
         (org-draft--format-heading))
-      (outline-next-heading)
 
+      (outline-next-heading)
       (while (< (point) end)
         (unless (org-draft--at-inline-task-p)
           (org-draft--format-heading))
-        (outline-next-heading)))
-    (setq org-draft--formatting-headers nil)))
+        (outline-next-heading)))))
 
 (defun org-draft--format-heading ()
+  (remove-overlays (pos-bol) (pos-eol) 'org-draft-heading t)
   (save-excursion
     (goto-char (pos-bol))
     (when org-draft-hide-all-stars
@@ -354,31 +447,12 @@ blank line remains visible)."
        'evaporate t
        'before-string (propertize "\n" 'face 'default 'line-height org-draft-padding-line-height)))))
 
-(defvar-local org-draft--formatting-headers nil)
-
-(defun org-draft--auto-format-headings (_beg _end _len)
-  (when (and (bound-and-true-p org-draft-mode)
-             (org-draft--at-heading-p))
-    (org-draft-format-headings-region (pos-bol) (pos-eol))))
-
-(defun org-draft--format-heading-from-org ()
-  ;; (when (bound-and-true-p org-draft-mode)
-  ;;   (let ((beg (save-excursion (forward-line -1) (pos-bol)))
-  ;;         (end (save-excursion (forward-line 1) (pos-eol))))
-  ;;     (org-draft-format-headings-region beg end))
-  ;;   (let (break-ov page-num)
-  ;;     (save-excursion
-  ;;       (when (progn (goto-char (pos-bol))
-  ;;                    (unless (bobp)
-  ;;                      (forward-char -1)
-  ;;                      (setq break-ov (seq-find (lambda (ov)
-  ;;                                                 (overlay-get ov 'org-draft-page-break))
-  ;;                                               (overlays-at (point))))))
-  ;;         (setq page-num (overlay-get break-ov 'org-draft-page-num))
-  ;;         (delete-overlay break-ov)
-  ;;         (org-draft--insert-page-break page-num)
-  ;;         (org-draft--rebuild-page-break-cache)))))
-  )
+(defun org-draft--auto-format-headings (beg end _len)
+  (when (bound-and-true-p org-draft-mode)
+    (save-excursion
+      (let ((start (progn (goto-char beg) (org-draft-goto-bol)))
+            (stop (progn (goto-char end) (org-draft-goto-eol))))
+        (org-draft-format-headings-region start stop)))))
 
 (defun org-draft--at-inline-task-p ()
   (and (fboundp 'org-inlinetask-at-task-p)
@@ -412,30 +486,11 @@ blank line remains visible)."
                       org-draft--page-break-cache)))
     res))
 
-(defun org-draft--on-page-break-p ()
-  (unless (bobp) (get-char-property (1- (point)) 'org-draft-page-break)))
-
-(defun org-draft--on-first-page-line-p ()
-  (or (save-excursion
-        (org-draft--simple-goto-bol)
-        (org-draft--on-page-break-p))
-      (save-excursion
-        (and (org-draft--at-heading-p)
-             (progn (goto-char (pos-bol))
-                    (org-draft--on-page-break-p))))))
-
-(defun org-draft--get-next-page-break-pos (pt)
-  (when (org-draft--rebuild-page-break-cache)
-    (let ((break (seq-find (lambda (break)
-                             (>= (overlay-end break) pt))
-                           org-draft--page-break-cache)))
-      (when break (overlay-end break)))))
-
 (defun org-draft--skip-page-lines ()
   (let ((res (not (eq 0 (vertical-motion org-draft-lines-per-page)))))
     (while (and (org-at-heading-p)
-                (not (eobp)))
-      (setq res (not (eq 0 (vertical-motion 1)))))
+                (not (eq (pos-eol) (point-max))))
+      (vertical-motion 1))
     res))
 
 (defun org-draft--cancel-pagination-timer ()
@@ -447,18 +502,17 @@ blank line remains visible)."
   (save-excursion
     (goto-char (point-min))
     (let ((case-fold-search t))
-      (if (search-forward "# pagination start" nil t)
-          (progn (org-draft-next-line)
-                 (org-draft-goto-bol)
-                 (skip-chars-forward "\n")
-                 (point))
-        (point)))))
+      (when (search-forward "# pagination start" nil t)
+        (progn (org-draft-next-line)
+               (org-draft-goto-bol)
+               (skip-chars-forward "\n")))
+      (point))))
 
 (defun org-draft--make-page-break-templates ()
   (unless org-draft--soft-page-break-templates
     (dotimes (i 5)
       (let* ((n (1+ i))
-             (width (- (window-max-chars-per-line nil org-draft-face) 4 n))
+             (width (- fill-column 4 n))
              (base-str-len (/ width 2))
 
              (left-str-soft (concat "\n" (make-string
@@ -468,20 +522,16 @@ blank line remains visible)."
              (right-str-soft (concat " ]" (make-string
                                            (- width (length left-str-soft))
                                            org-draft-soft-page-break-char)
-                                     "\n"))
-
-             (left-str-hard (concat "\n" (make-string
-                                          base-str-len
-                                          org-draft-hard-page-break-char)
-                                    "[ "))
-             (right-str-hard (concat " ]" (make-string
-                                           (- width (length left-str-soft))
-                                           org-draft-hard-page-break-char)
                                      "\n")))
-        (push (concat left-str-soft "%s" right-str-soft) org-draft--soft-page-break-templates)
-        (push (concat left-str-hard "%s" right-str-hard) org-draft--hard-page-break-templates)))
-    (setq org-draft--soft-page-break-templates (nreverse org-draft--soft-page-break-templates))
-    (setq org-draft--hard-page-break-templates (nreverse org-draft--hard-page-break-templates))))
+        (push (concat left-str-soft "%s" right-str-soft) org-draft--soft-page-break-templates)))
+
+    (setq org-draft--soft-page-break-templates (nreverse org-draft--soft-page-break-templates)
+          org-draft--hard-page-break-templates
+          (mapcar (lambda (str)
+                    (string-replace (char-to-string org-draft-soft-page-break-char)
+                                    (char-to-string org-draft-hard-page-break-char)
+                                    str))
+                  org-draft--soft-page-break-templates))))
 
 (defun org-draft--make-soft-page-break-string (n)
   (let* ((page-num (number-to-string n))
@@ -498,7 +548,8 @@ blank line remains visible)."
                                        'face 'org-draft-face
                                        'line-spacing org-draft-page-break-spacing))))
     (push ov org-draft--page-break-cache))
-  (unless (eobp) (forward-char 1)))
+  (unless (eobp)
+    (forward-char 1)))
 
 (defun org-draft--at-heading-p ()
   (save-excursion
@@ -507,39 +558,61 @@ blank line remains visible)."
 
 (defun org-draft--org-previous-visible-heading-ad (&rest _args)
   (when (bound-and-true-p org-draft-mode)
-    (while (get-char-property (point) 'org-draft-stars-hidden)
-      (forward-char 1))))
+    (while (and (not (bobp))
+                (get-char-property (point) 'org-draft-stars-hidden))
+      (forward-char 1))
+    (point)))
 
-(defun org-draft--previous-heading ()
-  (if (re-search-backward "^*+ " nil t)
-      (goto-char (pos-bol))
-    (goto-char (point-min)))
+(defun org-draft--previous-heading (&optional arg)
+  (setq arg (or arg 1))
+  (while (and (> arg 0)
+              (not (bobp)))
+    (when (org-draft--at-heading-p)
+      (forward-line -1))
+    (if (re-search-backward "^*+ " nil t)
+        (unless (org-draft--at-inline-task-p)
+          (setq arg (1- arg)))
+      (goto-char (point-min))
+      (setq arg 0)))
+  (when (org-draft--at-heading-p)
+    (org-draft-goto-bol))
   (point))
 
-(defun org-draft--next-heading ()
+(defun org-draft--next-heading (&optional arg)
+  (setq arg (or arg 1))
+  (while (and (> arg 0)
+              (not (eobp)))
+    (when (org-draft--at-heading-p)
+      (forward-line 1))
+    (if (re-search-forward "^*+ " nil t)
+        (progn (unless (org-draft--at-inline-task-p)
+                 (setq arg (1- arg)))
+               (unless (= arg 0)
+                 (org-draft-next-line 1)))
+      (goto-char (point-max))
+      (setq arg 0)))
   (when (org-draft--at-heading-p)
-    (forward-line 1))
-  (if (re-search-forward "^*+ " nil t)
-      (goto-char (pos-bol))
-    (goto-char (point-max)))
+    (org-draft-goto-bol))
   (point))
 
 (defun org-draft--save-visibility ()
   (save-excursion
     (goto-char (point-min))
-    (let (stop)
-      (while (and (not stop)
-                  (org-draft--at-heading-p))
-        (let (heading-inv entry-inv)
-          (when (invisible-p (point))
-            (setq heading-inv t))
-          (when (save-excursion
-                  (forward-line 1)
-                  (invisible-p (point)))
-            (setq entry-inv t))
-          (push `(:point ,(point) :heading-inv ,heading-inv :entry-inv ,entry-inv) org-draft--visibility))
-        (org-draft--next-heading)
-        (when (eobp) (setq stop t))))
+    (unless (org-draft--at-heading-p)
+      (org-draft--next-heading))
+    (let ((count 0))
+      (while (and (not (eobp))
+                  (not (eq (pos-eol) (point-max)))
+                  (org-draft--at-heading-p)
+                  (< count 100))
+        (setq count (1+ count))
+        (push `(:point ,(point)
+                :heading-inv ,(invisible-p (point))
+                :entry-inv ,(save-excursion
+                              (forward-line 1)
+                              (org-fold-folded-p (point) (org-fold-core-folding-spec-list))))
+              org-draft--visibility)
+        (org-draft--next-heading)))
     (setq org-draft--visibility (nreverse org-draft--visibility))))
 
 (defun org-draft--restore-visibility ()
@@ -557,31 +630,20 @@ blank line remains visible)."
     (let* ((last-break-pos (overlay-end (car (last org-draft--page-break-cache))))
            (expired-breaks-idx
             (or (when (> beg-of-change last-break-pos) (1- (length org-draft--page-break-cache)))
-                (when (and next-break-idx (> next-break-idx 0)) (1- next-break-idx))
+                (when (and next-break-idx (> next-break-idx 0)) next-break-idx)
                 0)))
       (mapc (lambda (break)
               (delete-overlay break))
             (seq-subseq org-draft--page-break-cache expired-breaks-idx))
       (setq org-draft--page-break-cache (seq-take org-draft--page-break-cache expired-breaks-idx)))))
 
-(defmacro org-draft--with-visibility (beg end &rest body)
-  (declare (indent 2))
-  `(save-restriction
-     (narrow-to-region ,beg ,end)
-     (org-draft--save-visibility)
-     (org-fold-show-all '(blocks headings))
-     (unwind-protect (progn ,@body)
-       (org-draft--restore-visibility))))
-
-;; TODO: Preciso de um jeito de fazer a pagination esperar a formatação de
-;; heading. O problema é que não sei como fazer essa comunicação.
 (defun org-draft--paginate-forward (buffer &optional chars-to-paginate)
   (when (eq buffer (current-buffer))
     (org-draft--cancel-pagination-timer)
 
     (setq chars-to-paginate (or chars-to-paginate org-draft-partial-repagination-count))
 
-    (let (beg page-num end)
+    (let (beg page-num end last)
       (if (org-draft--rebuild-page-break-cache)
           (let ((last-break (car (last org-draft--page-break-cache))))
             (setq page-num (1+ (overlay-get last-break 'org-draft-page-num))
@@ -589,24 +651,31 @@ blank line remains visible)."
         (setq page-num 1
               beg (org-draft--get-pagination-start-pos)))
 
-      (setq end (min (point-max) (+ beg chars-to-paginate)))
+      (setq end (min (point-max) (+ beg chars-to-paginate))
+            last (eq end (point-max)))
 
       (save-excursion
-        (let ((start (save-excursion (goto-char beg) (org-draft--previous-heading)))
-              (stop (save-excursion (goto-char end) (org-draft--next-heading))))
+        (let ((beg-vis (progn (goto-char beg)
+                              (org-draft--previous-heading)
+                              (unless (bobp) (forward-line -1))
+                              (point)))
+              (end-vis (progn (goto-char end)
+                              (org-draft--next-heading))))
 
-          (org-draft--with-visibility start stop
+          (org-draft--with-visibility beg-vis end-vis
             (goto-char beg)
-            (while (and (< (point) end)
-                        (org-draft--skip-page-lines))
+            (while (and (org-draft--skip-page-lines)
+                        (not (eobp)))
               (org-draft--simple-goto-eol)
               (org-draft--insert-page-break page-num)
               (setq page-num (1+ page-num)))))
 
-        (if (eobp)
-            (unless (org-draft--on-page-break-p)
+        (if last
+            (unless (or (org-draft--at-first-page-line-p)
+                        (org-draft--at-last-page-line-p))
               (forward-char -1)
               (org-draft--insert-page-break page-num))
+
           (setq org-draft--idle-pagination-timer
                 (run-with-idle-timer 0.5 nil 'org-draft--paginate-forward (current-buffer))))))))
 
@@ -614,93 +683,71 @@ blank line remains visible)."
   (when (bound-and-true-p org-draft-mode)
     (let ((beg (min beg end))
           next-break-idx dont-repaginate)
-      (when (and (org-draft--rebuild-page-break-cache)
-                 (setq next-break-idx (seq-position org-draft--page-break-cache beg
-                                                    (lambda (break beg)
-                                                      (>= (overlay-end break) beg)))))
-        (let ((page-num (overlay-get (nth next-break-idx org-draft--page-break-cache) 'org-draft-page-num))
-              (start (if (= next-break-idx 0)
-                         (org-draft--get-pagination-start-pos)
-                       (overlay-end (nth (1- next-break-idx) org-draft--page-break-cache))))
-              (stop (overlay-end (nth next-break-idx org-draft--page-break-cache))))
 
-          (unless (eq stop (point-max)) (setq stop (1+ stop)))
+      (save-excursion
+        (when (and (org-draft--rebuild-page-break-cache)
+                   (setq next-break-idx (seq-position org-draft--page-break-cache beg
+                                                      (lambda (break beg)
+                                                        (>= (overlay-end break) beg)))))
 
-          (org-draft--with-visibility start stop
-            (save-excursion
+          (let* ((page-num (overlay-get (nth next-break-idx org-draft--page-break-cache) 'org-draft-page-num))
+                 (start (if (= next-break-idx 0)
+                            (org-draft--get-pagination-start-pos)
+                          (overlay-end (nth (1- next-break-idx) org-draft--page-break-cache))))
+                 (ov-stop (overlay-end (nth next-break-idx org-draft--page-break-cache)))
+                 (stop (min (point-max) (1+ ov-stop)))
+                 (beg-vis (progn (goto-char start)
+                                 (org-draft--previous-heading)
+                                 (unless (bobp) (forward-line -1))
+                                 (point)))
+                 (end-vis (progn (goto-char stop)
+                                 (org-draft--next-heading))))
+
+            (org-draft--with-visibility beg-vis end-vis
               (goto-char start)
               (org-draft--skip-page-lines)
-              (setq dont-repaginate (eq page-num
-                                        (get-char-property (org-draft--visual-eol-pos)
-                                                           'org-draft-page-num)))))))
+              (setq dont-repaginate
+                    (eq page-num (get-char-property (org-draft--visual-eol-pos) 'org-draft-page-num)))))))
 
       (unless dont-repaginate
-        (org-draft--cancel-pagination-timer)
         (org-draft--delete-expired-breaks-from-cache beg next-break-idx)
         (org-draft--make-page-break-templates)
-        (org-draft--paginate-forward (current-buffer))
-        (setq org-draft--idle-pagination-timer
-              (run-with-idle-timer 0.5 nil 'org-draft--paginate-forward (current-buffer)))))))
-
-(defun teste ()
-  (interactive)
-  (let* ((next-break-idx (seq-position org-draft--page-break-cache (point)
-                                       (lambda (break beg)
-                                         (>= (overlay-end break) beg))))
-         (start (overlay-end (nth (1- next-break-idx) org-draft--page-break-cache))))
-    (goto-char start)
-    ;; (vertical-motion 24)
-    ;; (goto-char (org-draft--visual-eol-pos))
-    ))
-
-(defun lala ()
-  (interactive)
-  (org-draft-next-line 22))
-
-(defun lala (beg end)
-  (interactive "r")
-  (message "%s" (count-screen-lines beg end)))
-
-(modality-set-keys
- "M-n" #'teste
- "M-b" #'lala)
-
-(defun org-draft--signal-heading-formatting (&rest _args)
-  (setq org-draft--formatting-headers t))
+        (org-draft--paginate-forward (current-buffer))))))
 
 
 ;;; Mode definition:
 
 (defvar org-draft-mode-map (make-sparse-keymap))
+(setq org-draft-mode-map (make-sparse-keymap))
 
 (defun org-draft--maybe-headings ()
   (when (or org-draft-padding-before-headings
             org-draft-hide-all-stars)
-
     (add-hook 'after-change-functions #'org-draft--auto-format-headings -10 t)
-    (add-hook 'after-change-functions #'org-draft--signal-heading-formatting -20 t)
-    ;; (add-hook 'org-insert-heading-hook #'org-draft--format-heading-from-org 0 t)
-    ;; (add-hook 'org-after-demote-entry-hook #'org-draft--format-heading-from-org 0 t)
-    ;; (add-hook 'org-after-promote-entry-hook #'org-draft--format-heading-from-org 0 t)
-    ;; (add-hook 'org-todo #'org-draft--format-heading-from-org 0 t)
     (org-draft-format-headings-buffer)))
 
 (defun org-draft--maybe-indent ()
   (when org-draft-auto-indentation
-    (add-hook 'after-change-functions #'org-draft--auto-indent 0 t)
+    (add-hook 'after-change-functions #'org-draft--auto-indent -10 t)
     (org-draft-indent-buffer)))
 
 (defun org-draft--maybe-paginate ()
   (when org-draft-auto-pagination
-    (add-hook 'after-change-functions #'org-draft--auto-repaginate -10 t)
+    (add-hook 'after-change-functions #'org-draft--auto-repaginate 0 t)
     (org-draft-paginate-buffer)))
+
+(defun org-draft--org-todo-ad (orig-fun &rest args)
+  (when (bound-and-true-p org-draft-mode)
+    (let ((inhibit-modification-hooks t))
+      (apply orig-fun args)
+      (org-draft--format-heading))))
 
 ;;;###autoload
 (define-minor-mode org-draft-mode
   "Minor mode for writing with indented paragraphs."
   :lighter " draft"
 
-  ;; (advice-add 'org-end-of-line :after #'org-draft-goto-eol)
+  (advice-add 'org-todo :around #'org-draft--org-todo-ad)
   (advice-add 'org-beginning-of-line :around #'org-draft--beginning-of-line-ad)
   (advice-add 'scroll-up-line :around #'org-draft--fix-scroll-up-line-ad)
   (advice-add 'scroll-down-line :around #'org-draft--fix-scroll-down-line-ad)
@@ -718,19 +765,19 @@ blank line remains visible)."
   (if org-draft-mode
       (progn (setq org-draft--scroll-margin (min (max 0 scroll-margin)
 		                                 (truncate (/ (window-body-height) 4.0))))
+             (org-draft--make-complex-heading-regexp)
              (org-draft--maybe-headings)
              (org-draft--maybe-indent)
              (org-draft--maybe-paginate))
 
     (org-draft--cancel-pagination-timer)
     (remove-hook 'after-change-functions #'org-draft--auto-format-headings t)
-    ;; (remove-hook 'org-insert-heading-hook #'org-draft--format-heading-from-org t)
-    ;; (remove-hook 'org-after-demote-entry-hook #'org-draft--format-heading-from-org t)
-    ;; (remove-hook 'org-after-promote-entry-hook #'org-draft--format-heading-from-org t)
     (remove-hook 'after-change-functions #'org-draft--auto-indent t)
     (remove-hook 'after-change-functions #'org-draft--auto-repaginate t)
     (setq org-draft--soft-page-break-templates nil
-          org-draft--hard-page-break-templates nil)
+          org-draft--hard-page-break-templates nil
+          org-draft--visibility nil
+          org-draft--complex-heading-regexp nil)
     (org-draft-remove-overlays)))
 
 
