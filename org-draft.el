@@ -165,45 +165,34 @@ blank line remains visible)."
   (goto-char (org-draft--visual-bol-pos))
   (point))
 
+(defun org-draft--prop-p (prop &optional pos)
+  (get-char-property (or pos (point)) prop))
+
 (defun org-draft-next-line (&optional arg)
   (interactive "p")
   (setq arg (abs (or arg 1)))
 
-  (let* ((bol (org-draft--visual-bol-pos))
-         (col (if (save-excursion
-                    (goto-char bol)
-                    (get-char-property (point) 'org-draft-indent))
-                  0
-                (- (point) bol))))
+  (let ((col (org-draft--get-col)))
     (while (and (> arg 0)
                 (not (eobp)))
-      (vertical-motion 1)
+
       (setq arg (1- arg))
-      (while (and (get-char-property (point) 'org-draft-page-break)
+      (vertical-motion 1)
+
+      (while (and (org-draft--prop-p 'org-draft-page-break)
                   (not (eobp)))
         (forward-char 1)))
 
-    (if (> arg 0)
-        nil
-      (let ((f (min (- (org-draft--visual-eol-pos)
-                       (org-draft--visual-bol-pos))
-                    col)))
-        (unless (> 0 f)
-          (forward-char f))
-        t))
-    (when (get-char-property (point) 'org-draft-indent)
-      (forward-line 1))))
+    (org-draft--adjust-indent)
+    (org-draft--forward-col col)))
 
 (defun org-draft-previous-line (&optional arg)
   (interactive "p")
   (setq arg (abs (or arg 1)))
 
   (let* ((bol (org-draft--visual-bol-pos))
-         (col (if (save-excursion
-                    (goto-char bol)
-                    (get-char-property (point) 'org-draft-indent))
-                  0
-                (- (point) bol))))
+         (col (org-draft--get-col)))
+
     (while (and (< 0 arg)
                 (not (bobp)))
       (setq arg (1- arg))
@@ -234,20 +223,14 @@ blank line remains visible)."
                    (vertical-motion -2))))))
 
     (let (skipped)
-      (while (get-char-property (point) 'org-draft-page-break)
+      (while (org-draft--prop-p 'org-draft-page-break)
         (forward-char -1)
         (setq skipped t))
       (when skipped (forward-char -1)))
 
-    (org-draft--simple-goto-bol)
-
-    (let ((f (min (- (org-draft--visual-eol-pos)
-                     (org-draft--visual-bol-pos))
-                  col)))
-      (unless (> 0 f)
-        (forward-char f)))
-    (when (get-char-property (point) 'org-draft-indent)
-      (forward-line 1))))
+    (org-draft-goto-bol)
+    (org-draft--adjust-indent)
+    (org-draft--forward-col col)))
 
 (defvar-local org-draft--complex-heading-regexp nil)
 
@@ -263,7 +246,7 @@ blank line remains visible)."
   (let ((orig (point)))
     (apply orig-fun args)
     (when (bound-and-true-p org-draft-mode)
-      (when (get-char-property (point) 'org-draft-indent)
+      (when (org-draft--prop-p 'org-draft-indent)
         (forward-line)
         (when (= orig (point))
           (forward-line -1)))
@@ -278,7 +261,7 @@ blank line remains visible)."
 
 (defun org-draft--at-page-break-p ()
   (unless (bobp)
-    (get-char-property (1- (point)) 'org-draft-page-break)))
+    (org-draft--prop-p 'org-draft-page-break (1- (point)))))
 
 (defun org-draft--at-first-screen-line-p ()
   (let* ((top (window-start))
@@ -305,55 +288,71 @@ blank line remains visible)."
     (org-draft-next-line)
     (org-draft--at-first-page-line-p)))
 
-(defun org-draft--fix-scroll-down-line-ad (orig-fun &rest args)
-  (if (bound-and-true-p org-draft-mode)
-      (let ((orig-last-window-line-p (org-draft--at-last-screen-line-p))
-            (orig-first-page-line-p (org-draft--at-first-page-line-p))
-            (orig-pt (point))
-            target-on-last-page-line-p
-            target-on-first-page-line-p)
-        (move-to-window-line 0)
-        (org-draft-previous-line)
-        (setq target-on-last-page-line-p (org-draft--at-last-page-line-p)
-              target-on-first-page-line-p (org-draft--at-first-page-line-p))
-        (recenter org-draft--scroll-margin t)
+(defun org-draft--get-col ()
+  (if (and (not (bobp))
+           (org-draft--prop-p 'org-draft-indent (1- (point))))
+      (1- (- (point) (org-draft--visual-bol-pos)))
+    (- (point) (org-draft--visual-bol-pos))))
 
-        (if orig-last-window-line-p
-            (cond ((or target-on-first-page-line-p target-on-last-page-line-p)
-                   (move-to-window-line -4))
-                  (orig-first-page-line-p
-                   (move-to-window-line -3))
-                  (t (move-to-window-line -2)))
-          (goto-char orig-pt)))
-    (apply orig-fun args))
-  (when (get-char-property (point) 'org-draft-indent)
+(defun org-draft--adjust-indent ()
+  (when (org-draft--prop-p 'org-draft-indent)
     (forward-line 1)))
+
+(defun org-draft--forward-col (col)
+  (forward-char (min col (- (org-draft--visual-eol-pos)
+                            (org-draft--visual-bol-pos)))))
 
 (defun org-draft--fix-scroll-up-line-ad (orig-fun &rest args)
-  (interactive)
-  (if (bound-and-true-p org-draft-mode)
-      (let ((orig-pt (point))
-            (orig-first-screen-line-p (org-draft--at-first-screen-line-p))
-            (orig-first-page-line-p (org-draft--at-first-screen-line-p))
-            first-screen-line-p
-            first-page-line-p)
-        (save-excursion
-          (move-to-window-line 0)
-          (setq first-screen-line-p (org-draft--at-first-screen-line-p)
-                first-page-line-p (org-draft--at-first-page-line-p)))
-        (cond ((and first-screen-line-p
-                    first-page-line-p
-                    (not orig-first-page-line-p))
-               (move-to-window-line 2))
-              (first-page-line-p
-               (move-to-window-line 1))
-              (t (move-to-window-line 1)))
-        (recenter org-draft--scroll-margin t)
-        (if (not orig-first-screen-line-p)
-            (goto-char orig-pt)))
-    (apply orig-fun args))
-  (when (get-char-property (point) 'org-draft-indent)
-    (forward-line 1)))
+  (if (not (bound-and-true-p org-draft-mode))
+      (apply orig-fun args)
+    (let* ((orig-pt (point))
+           (orig-bol (save-excursion (move-to-window-line 0) (org-draft--visual-bol-pos)))
+           (orig-first-screen-line-p (org-draft--at-first-screen-line-p))
+           (col (org-draft--get-col)))
+
+      (move-to-window-line 1)
+      (recenter org-draft--scroll-margin t)
+
+      (when (eq orig-bol (org-draft--visual-bol-pos))
+        (move-to-window-line 2)
+        (recenter org-draft--scroll-margin t))
+
+      (if (not orig-first-screen-line-p)
+          (goto-char orig-pt)
+        (org-draft--adjust-indent)
+        (org-draft--forward-col col)))))
+
+(defun org-draft--fix-scroll-down-line-ad (orig-fun &rest args)
+  (if (not (bound-and-true-p org-draft-mode))
+      (apply orig-fun args)
+    (let ((orig-pt (point))
+          (col (org-draft--get-col))
+          target-bol)
+
+      (move-to-window-line 0)
+
+      (org-draft-previous-line)
+      (setq target-bol (org-draft--visual-bol-pos))
+      (recenter org-draft--scroll-margin t)
+
+      (if (< orig-pt (save-excursion (move-to-window-line -1) (org-draft--visual-bol-pos)))
+          (goto-char orig-pt)
+
+        (let ((n -1))
+          (move-to-window-line n)
+          (redisplay t)
+          (when (org-draft--at-heading-p)
+            (org-draft-previous-line))
+          (while (save-excursion (move-to-window-line 0)
+                                 (and (not (bobp))
+                                      (not (eq (org-draft--visual-bol-pos) target-bol))))
+            (setq n (1- n))
+            (goto-char target-bol)
+            (recenter org-draft--scroll-margin t)
+            (move-to-window-line n)
+            (redisplay t))
+          (org-draft--adjust-indent)
+          (org-draft--forward-col col))))))
 
 (defun org-draft--keyboard-quit-ad (&rest _args)
   (when (and (bound-and-true-p org-draft-mode)
@@ -559,7 +558,7 @@ blank line remains visible)."
 (defun org-draft--org-previous-visible-heading-ad (&rest _args)
   (when (bound-and-true-p org-draft-mode)
     (while (and (not (bobp))
-                (get-char-property (point) 'org-draft-stars-hidden))
+                (org-draft--prop-p 'org-draft-stars-hidden))
       (forward-char 1))
     (point)))
 
@@ -707,7 +706,7 @@ blank line remains visible)."
               (goto-char start)
               (org-draft--skip-page-lines)
               (setq dont-repaginate
-                    (eq page-num (get-char-property (org-draft--visual-eol-pos) 'org-draft-page-num)))))))
+                    (eq page-num (org-draft--prop-p 'org-draft-page-num (org-draft--visual-eol-pos))))))))
 
       (unless dont-repaginate
         (org-draft--delete-expired-breaks-from-cache beg next-break-idx)
